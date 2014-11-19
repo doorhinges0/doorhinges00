@@ -1,0 +1,56 @@
+
+
+
+编写类树：
+
+1. 每个class 语句会生成一个新的类对象。
+2.	每次类调用时，就会生成一个新的实例对象。
+3.	实例自动连接至创建了这些实例的类。
+4.	类连接至其超类的方式是，将超类列在类头部的括号内。其从左至右的顺序会决定树中的次序。
+
+class C2: ...
+
+class C3: ...
+class C1(C2,C3)   # linked to superclasses
+
+
+I1 = C1()
+I2 = C1()
+
+1. 属性通常是在class语句中通过赋值语句添加在类中，而不是嵌入在函数的def 语句内。
+2.	属性通常是在类内，对传给函数的特殊参数（也就是self）， 做赋值运算而添加在实例中。
+
+3. python 中的self 相当于 this（在java 和 c++中），但是python 中的self 一定是明确写出来的，这样使属性的读取更为明显。
+
+
+class C1(C2,C3):
+	def setname(self, who):
+		self.name = who 
+		
+I1 = C1()
+I2 = C1()
+I1.setname('bob')
+I2.setname('mel')
+print(I1.name）
+
+
+构造函数： _init_
+
+
+class C1(C2,C3)
+	def _init_(self, who)
+		self.name = who
+		
+I1 = C1('bob')
+I2 = C1('java')
+print(I1.name)
+
+每次从类产生实例时，python 会自动调用名为 _init_ 的方法。新实例会如往常那样传入 _init_ 的 self 参数， 而列在类调用小括号的任何值会作为第二个以及其后的参数。其效果就是在创建实例时初始化了这个实例，而不需要额外的方法调用。
+
+
+
+
+
+
+
+

@@ -1,0 +1,44 @@
+
+最小化 from * 的破坏：_X 和 __all__
+
+有种特定的情况，把下划线放在变量名的前面（例如， __X), 可以防止客户端使 from * 语句导入模块名时， 把其中的那些变量名复制出去。这其实是为了对命名空间的破坏最小化而已。因为 from * 会把所有变量名复制出去，导入者可能得到超出它所需的部分（包括会覆盖导入者内的变量名的变量名）。下划线不是“私有”声明：你也可以使用其他导入形式看见并修改这类变量名。例如，使用import语句。
+
+__all__ = ["error","encode","decode"]
+使用此功能时，from * 语句只会把列在 __all__列表中的这些变量名复制出来。事实上。这个 _X 惯例相反：__all__是指出要复制的变量名，而 _X是指出不被复制的变量名。python会先寻找模块内的__all__列表；如果没有定义的话， from * 就会复制出开头没有单划线的所有变量名。
+
+
+__name__  和 __main__
+
+这是一个特殊的与模块相关的技巧，可以把文件作为模块导入，并以独立式程序的形式运行。每个模块都有一个名为__name__ 的内置属性，python会自动设置该属性：
+
+1. 如果文件是以顶层程序文件执行，在启动时，__name__就会设置为字符串 "__name__"
+2.	如果文件被导入， __name__ 就会改设成客户端所了解的模块名。
+
+结果就是模块可以检测自己的__name__，来确定它是在执行还是在导入。假如，假设我们建立下面的模块文件，名为runme.py ， 它只导出一个名为tester的函数。
+
+def tester():
+        print("its christmas in Heaven ..")
+
+if __name__ == '__main__':  #only when run 
+        tester()						#not when imported
+        
+这个模块定义了一个函数，让用户可以正常的导入并使用：
+
+
+[root@APP01 python_test]# python
+Python 2.6.6 (r266:84292, Feb 22 2013, 00:00:18) 
+[GCC 4.4.7 20120313 (Red Hat 4.4.7-3)] on linux2
+Type "help", "copyright", "credits" or "license" for more information.
+>>> import runme
+>>> runme.tester()
+its christmas in Heaven ..
+>>> 					
+        						
+然而，这个模块也在末尾包含了当此文件以程序执行时，就会调用该函数的代码：
+[root@APP01 python_test]# python runme.py
+its christmas in Heaven ..
+[root@APP01 python_test]# 
+实际上，一个模块的__name__变量充当一个使用模式标志，允许它编写成一个可导入的库和一个顶层脚本。        
+
+也许使用__name__测试最常见的就是自我测试代码。简而言之，可以在文件末尾加个__name__测试， 把测试模块导出的程序代码放在模块中。
+

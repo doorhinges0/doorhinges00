@@ -1,0 +1,88 @@
+
+one loop per thread
+
+
+//设置cb函数，字段等
+ struct ev_io socket_watcher;
+
+  ev_timer timeout_watcher;
+
+
+  ev_io_init(&socket_watcher, accept_cb, sd, EV_READ);
+
+  ev_io_start(loop, &socket_watcher);
+
+
+
+  ev_timer_init (&timeout_watcher, timeout_cb, 2, 1);
+
+  ev_timer_start (loop, &timeout_watcher);
+
+
+
+  while (1) {
+
+      printf("ev_loop\n") ;
+
+      ev_loop(loop, 0);
+
+  }
+  
+    
+main  对应一个 main  thread  ，   one loop thread thread ,
+这样的话，也就对应 one loop 
+
+  
+void noinline
+ev_io_start (EV_P_ ev_io *w) EV_THROW
+{
+  int fd = w->fd;
+
+  if (expect_false (ev_is_active (w)))
+    return;
+
+  assert (("libev: ev_io_start called with negative fd", fd >= 0));
+  assert (("libev: ev_io_start called with illegal event mask", !(w->events & ~(EV__IOFDSET | EV_READ | EV_WRITE))));
+
+  EV_FREQUENT_CHECK;
+
+  ev_start (EV_A_ (W)w, 1);
+  array_needsize (ANFD, anfds, anfdmax, fd + 1, array_init_zero);
+  wlist_add (&anfds[fd].head, (WL)w);
+
+  /* common bug, apparently */
+  assert (("libev: ev_io_start called with corrupted watcher", ((WL)w)->next != (WL)w));
+
+  fd_change (EV_A_ fd, w->events & EV__IOFDSET | EV_ANFD_REIFY);
+  w->events &= ~EV__IOFDSET;
+
+  EV_FREQUENT_CHECK;
+}
+
+
+关键是这一句：
+
+wlist_add (&anfds[fd].head, (WL)w);
+
+void noinline
+ev_invoke_pending (EV_P)
+{
+  pendingpri = NUMPRI;
+
+  while (pendingpri) /* pendingpri possibly gets modified in the inner loop */
+    {
+      --pendingpri;
+
+      while (pendingcnt [pendingpri])
+        {
+          ANPENDING *p = pendings [pendingpri] + --pendingcnt [pendingpri];
+
+          p->w->pending = 0;
+          EV_CB_INVOKE (p->w, p->events);
+          EV_FREQUENT_CHECK;
+        }
+    }
+}
+
+ev_loop()  --->  int ev_run (EV_P_ int flags)  --->  # define EV_INVOKE_PENDING ev_invoke_pending (EV_A) 
+   --->     void noinline   ev_invoke_pending (EV_P)     

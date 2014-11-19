@@ -1,0 +1,158 @@
+
+
+
+谢谢你的建议。BACKLOG我一般都用8192。
+
+最大fd一般用20w。
+
+现在服务器很稳定，几个月都不会down掉，已经用做商业应用有半了。
+
+
+
+
+
+
+
+
+
+每次接受新连接的时候，我监视了这几个事件。
+
+EPOLLIN | EPOLLET |  EPOLLERR | EPOLLHUP | EPOLLPRI;
+
+每次有一批事件返回，经过统计  
+返回的一批fd数量=出错关闭的fd数量+由EPOLLIN转为EPOLLOUT的fd数量+EPOLLOUT正常处理关闭的fd的数量。 也就是说，每批事件都完全处理，没有遗漏。
+
+观察发现EPOLLET |  EPOLLERR | EPOLLHUP 这3发事件的发生率为0。
+
+但fd却成增大趋势。以前那写较小的fd在经历一段时间后渐渐丢失，不再可用。
+
+请问fd都丢失到哪里去了？
+
+-----------------------------------------------------------------------
+
+后来经常有人写信问我这个问题，我在帖子里回复过，好象帖子太多了，不好找，还是写在这里吧。
+单纯靠epoll来管理描述符不泄露几乎是不可能的。
+完全解决方案很简单，就是对每个fd设置超时时间，如果超过timeout的时间，这个fd没有活跃过，就close掉。
+
+
+
+
+总之，fd耗尽是你程序的问题，与epoll无关。
+看了你的标题，吓我一跳，以为epoll有bug呢。
+用了epoll好几年了，没发现丢fd。
+
+如下事项：
+accept必须判定成功才能提交epoll;
+提交给eopll的fd，必须设置超时。
+有问题的fd要关闭，并从epoll中删除。
+
+抗攻击也是你的责任，与epoll无关。
+攻击，往往不能完成全部逻辑，对于那些只进行了部分逻辑就没有了下文的连接，通常是超时后T出去。
+
+所以，研究“epoll丢失fd”是个伪命题。
+研究“如何正确使用epoll，防止丢fd”还可以。
+
+最近使用solares的port，与epoll相似的机制，比epoll使用简单，是否可以代替epoll？
+
+
+
+void Dispatcher::run()
+{
+	shm_block mb;
+	mb.data = (char *) malloc (ini.socket_bufsize);
+	int timeout = 1000;
+	if (mb.data == NULL)
+	{
+		LOG (LOG_ERROR, "malloc failed");
+		return ;
+	}
+
+	while (!stopped)
+	{
+
+		int ready = epoll_wait (epfd, ep_events, max_fd, timeout);
+
+		if (ready < 0)
+		{
+			continue;
+		}
+		else if (ready > 0)
+			LOG (LOG_TRACE, "\n\nactive sockets:%d", ready);
+
+		read_pipe ();
+		//这里不能放在pipe可读的条件里
+		for (; recv_shmq.pop (&mb, false, false) == 0 ;)
+			handle_output (&mb);
+
+		run_once (mb, ready);
+
+		check_timeout();
+	}
+
+	free (mb.data);
+	if (app_fini != NULL)
+		app_fini (1);
+}
+
+
+这样写没有加 超时操作， 
+int timeout = 1000;
+int ready = epoll_wait (epfd, ep_events, max_fd, timeout);
+
+
+void *serv_epoll(void *p)
+{
+    int i, ret, cfd, nfds;;
+    struct epoll_event ev,events[EVENTSIZE];
+    char buffer[512];
+
+    while (1)
+    {
+          nfds = epoll_wait(epfd, events, EVENTSIZE , -1);
+          //printf("nfds ........... %d\n",nfds);
+          for (i=0; i<nfds; i++)
+          {
+                if(events[i].events & EPOLLIN)
+                {
+                    cfd = events[i].data.fd;
+                    ret = recv(cfd, buffer, sizeof(buffer),0);
+                    //printf("read ret..........= %d\n",ret);
+
+                    ev.data.fd = cfd;
+                    ev.events = EPOLLOUT | EPOLLET;
+                    epoll_ctl(epfd, EPOLL_CTL_MOD, cfd, &ev);
+                }
+                else if(events[i].events & EPOLLOUT)
+                {
+                    cfd = events[i].data.fd;
+                    ret = send(cfd, BUFFER, strlen(BUFFER), 0);
+                    //printf("send ret...........= %d\n", ret);
+
+                    ev.data.fd = cfd;
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, &ev);
+                  
+                    close(cfd);
+
+                }
+
+                   else
+              {
+                                
+                cfd = events[i].data.fd;
+                ev.data.fd = cfd;
+                epoll_ctl(epfd, EPOLL_CTL_DEL, cfd, &ev);
+                close(cfd);
+               }
+
+
+          }
+    }
+    return NULL;
+}
+
+
+水平触发 --> 有事了，你不处理？不断骚扰你直到你处理。
+边沿触发 --> 有事了，告诉你一次，你不处理？拉倒！
+  
+  
+  

@@ -1,0 +1,51 @@
+
+用户定义的异常
+
+用户定义的异常能够通过类编写， 它继承自一个内置的异常类：通常这个类的名称叫做 Exception。 基于类的异常允许脚本建立异常类型，继承行为以及附加状态信息。
+
+// 继承来自Exception ，和java 一样，c++ 异常类不用继承异常基类
+
+class Bad(Exception):
+	pass
+	
+def doomed():
+	raise Bad()
+	
+try:
+	doomed()
+exception Bad:
+	print('got Bad')
+	
+	
+// raise 就是 java 和 c++ 中的 throw 跑出一个异常。
+
+
+except：   									捕捉所有异常类型
+except name:									只捕捉特定的异常
+except name, value：						捕捉所列出的异常何其额外的数据（或实例）
+except (name1, name2)：				捕捉任何列出的异常
+except (name1,name2), value：	捕捉任何列出的异常，并取得其额外的数据
+else:													如果没有异常就运行
+finally:											总是运行改模块
+
+
+try:
+	main-action
+except Exception1:
+	handler1
+except Exception2:
+	handler2
+...
+else:
+	else-block
+finally:
+	finally-block
+
+
+	
+raise 语句
+
+raise <instance>     	#raise instance of class
+raise <class>					#make and raise instance of class
+raise 								# reraise the most recent exception
+
