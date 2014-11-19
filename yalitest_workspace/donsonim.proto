@@ -1,0 +1,245 @@
+//UPDATED BY paul, 19:43 2/26/2013.
+
+
+package donson.im;
+
+//发包体格式为cStart(0x30) + wHeaderLen(ReqHeader长度) + wPacketLen(包体长度) + ReqHeader + 包体 + cEnd（0x40）
+//回包体格式为cStart(0x30) + wHeaderLen(RspHeader长度) + wPacketLen(包体长度) + RspHeader + 包体 + cEnd（0x40）
+
+enum Cmd
+{
+	CMD_BEGIN = 0;			// 暂时不用关心
+
+	CMD_LOGIN = 1;			// 登录命令
+	CMD_RELOGIN = 2;		// 重连命令
+
+	CMD_HEARTBEAT = 3;		// 心跳命令
+
+	CMD_UPMSG = 4;			// 发送消消息命令
+	CMD_PUSHMSG = 5;		// 客户端接收到服务端转发的消息命令
+	CMD_PUSHMSGACK = 6;		// 客户端确认接收到服务器转发的消息
+
+	CMD_UPGRPMSG = 7;		// 发送群消息命令
+	CMD_PUSHGRPMSG = 8;		// 服务端转发的群消息命令
+	CMD_PUSHGRPMSGACK = 9;		// 客户确认接收到服务器转发的群消息
+
+	CMD_OFFLINEMSG = 10;		// 拉用户的C2C消息
+	CMD_CHECKGRPMSG = 11;		// 拉用户的群消息变动
+	CMD_GETGRPMSG = 12;		// 拉特定群的离线消息
+
+	CMD_NOTICE = 13;		//拉取通知信息
+	CMD_NOTICEACK = 14;		//设置通知已读
+}
+
+message ReqHeader
+{
+	required uint32 uin = 1 [default = 0];		// 用户ID（登录包填0）
+	required uint32 appid = 2 [default = 0];	//客户端版本号
+	required uint32 seq = 3 [default = 0];		//客户端序列号
+	required uint32 ver = 4 [default = 0];		//协议版本号
+	required Cmd cmd = 5 [default = CMD_BEGIN];	//命令字
+}
+
+// 响应包头
+message RspHeader
+{
+    required uint32 ret = 1;        //结果返回
+    required string message = 2;    //返回消息
+    required uint32 seq = 3;        //客户端序列号
+    optional string reserved = 4;   //保留字段 
+    required Cmd cmd = 5;           //命令字
+    required uint32 isPush = 6 [default = 0];	//是否为推送消息
+}
+
+// 登录请求包
+message ReqLogin
+{
+	required string username = 1;		// 登录用户名
+	required string password = 2;		// 登录密码（32位MD5）
+	required string devicetoken = 3;	// 设备标示
+	required uint32 devicetype = 4;		// 设备类型iPhone = 2，iPad = 3，Android = 4
+}
+
+// 登录响应包
+message RspLogin
+{
+	optional string token = 1;		// IM token
+	optional string apiresponse = 2;	// api服务器登录返回的json
+	optional RspOfflineMsg msg = 3;		// 离线消息下发
+}
+
+//重连/心跳使用
+message ReqHeartBeat
+{
+    required string token = 1;          // 接入层的token
+}
+
+// 重连/心跳使用响应
+message RspHeartBeat
+{
+    optional string token = 1;	// 返回更新token
+}
+
+//一分钟内断链重连
+message ReqReLogin
+{
+	required string token = 1;          // 接入层的token
+}
+
+message RspReLogin
+{
+	optional string token = 1;	// 返回更新token
+}
+
+//发送消息
+enum MsgType
+{
+	Msg_Text = 0;			// 文本消息
+	Msg_Pic = 1;			// 图片消息
+	Msg_Audio = 2;			// 语音消息
+	Msg_File = 3;			// 文件消息
+	Msg_Notice = 4;			// 通知类型消息
+	Msg_Offline = 5;		// 下线通知消息
+}
+
+// 消息体
+message RichMsg		//定义消息类型
+{
+	required MsgType type = 1 [default = Msg_Text];		// 消息类型
+	required string msg = 2;				// 消息内容
+}
+
+// 消息命令
+message Msg
+{
+	repeated RichMsg messages = 1;	// 消息
+	optional uint32 msgid = 2;	// 消息下发时使用
+	optional uint32 time = 3;	// server校正时间
+}
+
+// 发送消息请求包
+message ReqUpMsg
+{
+	required uint32 touin = 1;	// 消息接收者ID
+	required Msg msg = 2;		// 消息
+}
+
+// 发送消息响应包
+message RspUpMsg
+{
+	required uint32 msgid = 1;	// 消息发送成功后对应的消息ID
+	required uint32 time = 2;	// 消息发送时间，由服务端提供
+	required uint32 touin = 3;	// 消息接收者ID
+}
+
+// 服务器转发聊天消息包
+message PushMsg
+{
+	required uint32 fromuin = 1;	// 发送者ID
+	required Msg msg = 2;		// 消息
+}
+
+// 客户端确认接收转发消息，回包包体为空
+message ReqPushMsgAck
+{
+	required uint32 fromuin = 1;	// 发送者ID
+	required uint32 msgid = 2;	// 接收到的消息ID
+}
+
+// 发送群消息请求包
+message ReqUpGrpMsg
+{
+	required uint32 grpid = 1;	// 接收的群ID
+	required Msg msg = 2;		// 消息
+}
+
+// 发送消息响应包
+message RspUpGrpMsg
+{
+	required uint32 msgid = 1;	// 发送成功后，对应的消息ID
+	required uint32 time = 2;	// 消息发送时间，由服务端提供
+	required uint32 grpid = 3;	// 接收的群ID
+}
+
+// 服务器转发群消息包命令
+message PushGrpMsg
+{
+	required uint32 grpid = 1;	// 群ID
+	required uint32 fromuin = 2;	// 发送者的ID 
+	required Msg msg = 3;		// 消息
+}
+
+// 客户端确认接收群消息命令
+message ReqPushGrpMsgAck
+{
+	required uint32 grpid = 1;	// 群ID
+	required uint32 msgid = 2;	// 消息ID
+}
+
+//拉取离线消息
+message ReqOfflineMsg
+{
+	required uint32 msgid = 1 [default = 0];	//需要下发的起始位置，从后往前下发，分页逻辑从RspOfflineMsg里取
+	optional uint32 count = 2 [default = 20];	//默认最多下发20条
+}
+
+message RspOfflineMsg
+{
+	repeated PushMsg messages = 1;
+	optional uint32 msgid = 2;	//分页msgid
+	optional uint32 readid = 3;	//服务端记录的用户的已读id
+}
+
+//离线消息确认走ReqPushMsgAck
+
+//拉取通知消息
+message ReqNotice
+{
+	required uint32 noticeid = 1 [default = 0];	//需要下发的起始位置，0为检查是否有更新，从前往后下发，分页逻辑从RspOfflineMsg里取
+	optional uint32 count = 2 [default = 5];	//默认最多下发5条
+}
+
+message RspNotice
+{
+	repeated PushMsg messages = 1;
+	optional uint32 noticeid = 2;	//分页notice，为0则代表无后续分页数据
+	optional uint32 readid =3;	//服务端记录的用户的已读id
+}
+
+//已读noticeid，回包包体为空
+message ReqNoticeAck
+{
+	required uint32 noticeid = 1;	//已读通知
+}
+
+//获取群消息变化
+message ReqCheckGrpMsg
+{
+	repeated uint32 grpid = 1; 	//每次最多只能获取100个群消息变化，否则请自行分页
+}
+
+message GrpInfo
+{
+	required uint32 grpid = 1;	//群ID
+	required uint32 msgid = 2;	//群最新的msgid
+	required uint32 readid = 3;	//用户最新的已读id
+}
+
+message RspCheckGrpMsg
+{
+	repeated GrpInfo grpinfo = 1;	//只下发msgid>readid的群消息变化
+}
+
+//获取单个群消息
+message ReqGetGrpMsg
+{
+	required uint32 grpid = 1;
+	required uint32 msgid = 2;
+	required uint32 count = 3;
+}
+
+message RspGetGrpMsg
+{
+	repeated PushGrpMsg messages = 1;
+	optional uint32 msgid = 2;	//分页msgid
+}

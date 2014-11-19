@@ -1,0 +1,373 @@
+
+#include "Shm_Queue.h"
+
+//extern bool stopped;
+
+int Shm_Queue::create ( key_t sem_key, int length)
+{
+		sem_id = semget (sem_key, 1, IPC_CREAT | 0644);
+		if (sem_id < 0)
+		{
+				fprintf( stderr, "semget (key== %d):%s\n", sem_key, strerror(errno));
+				return -1;
+		}
+		
+		semun arg;
+		arg.val = 1;
+		semctl ( sem_id, 0, SETVAL, arg);
+		
+		shm_len = length;
+		shm_addr = (queue_header*) mmap(NULL, length, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANON, -1, 0);
+		
+		shm_addr->head = sizeof (queue_header);
+		shm_addr->tail = shm_addr->head;
+		
+		return 0;
+}
+
+
+Shm_Queue::Shm_Queue()
+{
+}
+
+Shm_Queue::~Shm_Queue()
+{
+	munmap (shm_addr, shm_len);
+	shm_addr = NULL;
+}
+	
+
+int Shm_Queue::release ()
+{
+	sembuf op;
+	
+	op.sem_num = 0;
+	op.sem_flg = SEM_UNDO;
+	op.sem_op = 1;
+	
+	while (semop (sem_id, &op, 1) == -1)
+	{
+		if (errno == EINTR)
+			continue;
+		if ( errno == EIDRM)
+		{
+				fprintf(stderr, "%d sem removed , semop error\n", sem_id);
+				exit(1);
+		}
+		else
+		{
+			fprintf(stderr, "semop error, %s\n", sem_id, strerror(errno));
+			return -1;
+		}
+		
+	}
+	return 0;
+	
+}
+
+
+int Shm_Queue::acquire ()
+{
+	sembuf op;
+	
+	op.sem_num = 0;
+	op.sem_flg = SEM_UNDO;
+	op.sem_op = -1;
+	
+	if (semop (sem_id , &op, 1) == -1)
+	{
+		if (errno == EINTR)
+		{
+			fprintf(stderr, "%d sem interrupt,semop error\n", sem_id);
+			return -1;
+		}
+		if ( errno == EIDRM)
+		{
+				fprintf(stderr, "%d sem removed , semop error\n", sem_id);
+				exit(1);
+		}
+		else
+		{
+			fprintf(stderr, "semop error, %s\n", sem_id, strerror(errno));
+			return -1;
+		}
+	}
+//	fprintf(stderr, "Shm_Queue::acquire \n");
+	return 0;
+}
+
+	
+bool Shm_Queue::check_mb ( const shm_block* mb)
+{
+		if ( mb == NULL)
+			{
+				fprintf(stderr, "shm_Queue::check_mb(mb==NULL)\n");
+				return false;
+			}
+			
+			if (mb->length > 40960 + MB_HEAD_LENGTH || mb->length < MB_HEAD_LENGTH)
+			{
+				fprintf(stderr, "shm_Queue::check_mb(length=%d, head=%d)\n",mb->length, MB_HEAD_LENGTH);
+				return false;
+			}
+			
+			if (mb->type < 0)
+			{
+					fprintf(stderr, "shm_Queue::check_mb(mb->type=%d)", mb->type);
+					return false;
+			}
+	
+	//		fprintf(stderr, " in check_mb\n");
+			return true;
+}
+	
+
+int Shm_Queue::pop (shm_block* mb, bool locked, bool blocked)
+{
+		int ret_code = -1;
+		
+		if (locked && acquire () == -1){
+			release();
+			return -1;
+		}
+		
+		if (pop_wait (blocked) == 0)
+		{
+			shm_block* tail_mb = get_tail_mb();
+			
+			if (!check_mb (tail_mb))
+				exit(1);
+				
+			int head_pos = shm_addr->head;
+			if (shm_addr->tail < head_pos && shm_addr->tail + tail_mb->length >head_pos)
+			{
+				fprintf(stderr, "bug::shm_queue tail=%d, head=%d, current length=%d", shm_addr->tail, head_pos, tail_mb->length);
+				exit(1);
+			}
+			
+			if (shm_addr->tail > head_pos && shm_addr->tail + tail_mb->length > shm_len)
+			{
+				fprintf(stderr, "bug::shm_queue tail=%d, head=%d, current length=%d", shm_addr->tail, head_pos, tail_mb->length);
+				exit(1);
+			}
+			/*
+			memcpy (mb, tail_mb, MB_HEAD_LENGTH);
+			memcpy (mb->data, (char*)tail_mb + MB_HEAD_LENGTH, MB_DATA_LENGTH (tail_mb));*/
+			memcpy (mb, tail_mb, MB_HEAD_LENGTH);
+			memcpy (mb->data, (char*)tail_mb + MB_HEAD_LENGTH, MB_DATA_LENGTH (tail_mb));
+
+			{
+				char data[20] ={0};
+				memcpy (data, mb->data, MB_DATA_LENGTH (tail_mb));
+				fprintf(stderr, "****data:%s****\n", data);
+			}
+			
+#if 0
+			{
+				char data[20] ={0};
+	 		
+				memcpy (data, (char*)mb + MB_HEAD_LENGTH, MB_DATA_LENGTH (mb));
+				fprintf(stderr, "----MB_HEAD_LENGTH (mb):%d----\n", MB_HEAD_LENGTH);
+				fprintf(stderr, "----MB_DATA_LENGTH (mb):%d----\n",MB_DATA_LENGTH (mb));
+				data[MB_DATA_LENGTH (mb)]='\0';	
+				fprintf(stderr, "mb->dada:%p\n", (char*)mb + MB_HEAD_LENGTH);
+				printf("----mb->dada:%s----\n", data);
+				fprintf(stderr, "----mb->length:%d------\n",mb->length);
+			  fprintf(stderr, "-----mb->id:%d--------------\n",mb->id);
+			  fprintf(stderr, "------mb->type:%d-------------\n",mb->type);
+				
+				char data2[20] ={0};
+				memcpy (data2, (char*)tail_mb + MB_HEAD_LENGTH, MB_DATA_LENGTH (mb));
+				//data[MB_DATA_LENGTH (mb)]='\0';
+				fprintf(stderr, "----MB_HEAD_LENGTH (mb):%d----\n", MB_HEAD_LENGTH);
+				fprintf(stderr, "----MB_DATA_LENGTH (mb):%d----\n",MB_DATA_LENGTH (tail_mb));	
+				fprintf(stderr, "tail_mb->dada:%p\n", (char*)tail_mb + MB_HEAD_LENGTH);
+				printf("----tail_mb->dada:%s----\n", data2);
+				fprintf(stderr, "----tail_mb->length:%d------\n",tail_mb->length);
+			  fprintf(stderr, "-----tail_mb->id:%d--------------\n",tail_mb->id);
+			  fprintf(stderr, "------tail_mb->type:%d-------------\n",tail_mb->type);
+				
+			}
+
+		//	fprintf(stderr, "-------data;%s------------\n");
+			fprintf(stderr, "\n-------------------\n");
+			
+			
+			fprintf(stderr, "\n====pop === (char*)tail_mb + MB_HEAD_LENGTH:%p\n", (char*)tail_mb + MB_HEAD_LENGTH);
+			fprintf(stderr, "\n====pop === tail_mb:%p\n", (char*)tail_mb);
+#endif 			
+			shm_addr->tail = shm_addr->tail + tail_mb->length;
+			
+			fprintf(stderr, "pid=%d, pop length=%d, type=%d, tail=%d,head=%d,id=%d\n",getpid(), mb->length, mb->type, shm_addr->tail, shm_addr->head, mb->id);
+			
+		
+			
+			ret_code = 0;
+		}
+		
+		if (locked)
+			release();
+		
+		return ret_code;
+}
+
+
+int Shm_Queue::align_queue_tail ()
+{
+	shm_block* tail_mb = get_tail_mb ();
+	if (shm_len - shm_addr->tail < MB_HEAD_LENGTH || tail_mb->type == PAD_REQUEST)
+		if (shm_addr->head < shm_addr->tail)
+				shm_addr->tail = sizeof(queue_header);
+				
+	return 0;
+	
+}
+
+		
+int Shm_Queue::push (const shm_block* mb, bool locked, bool blocked)
+{
+	int ret_code = -1;
+	if (!check_mb (mb))
+		return -1;
+		
+//		fprintf(stderr, "Shm_Queue::push before locked && acquire ()  \n");	
+		
+	if ( locked && acquire () == -1)
+		return -1;
+		
+//	fprintf(stderr, "Shm_Queue::push before push_wait \n");	
+		
+	if (push_wait (mb, blocked) == 0)
+	{
+		char* next_mb = (char*) get_head_mb();
+		fprintf(stderr, "\n====push === next_mb:%p\n", next_mb);
+		
+		memcpy (next_mb, mb, MB_HEAD_LENGTH);
+		memcpy (next_mb + MB_HEAD_LENGTH, mb->data, MB_DATA_LENGTH (mb));
+		
+	//	fprintf(stderr, "\n====push === next_mb + MB_HEAD_LENGTH:%p\n", next_mb + MB_HEAD_LENGTH);
+		
+		shm_addr->head = shm_addr->head + mb->length;
+		
+		fprintf(stderr,  "pid=%d,push length=%d, type=%d,tail =%d, head=%d, shm len=%d, id=%d",
+			getpid(), mb->length, mb->type, shm_addr->tail, shm_addr->head, shm_len,mb->id);
+			
+		char data[20] ={0};
+		printf("==========Shm_Queue::push  start ==========\n");
+		printf("%d\n",mb->type );
+		printf("%d\n", mb->id );
+		
+	//	memcpy (next_mb + MB_HEAD_LENGTH, mb->data, MB_DATA_LENGTH (mb));
+	fprintf(stderr, "MB_DATA_LENGTH (mb):%d\n",MB_DATA_LENGTH (mb));	
+		memcpy (data,  mb->data, MB_DATA_LENGTH (mb));
+		printf("%s\n", data);
+		printf("==========Shm_Queue::push  end ==========\n");
+			
+			
+		ret_code = 0;	
+		
+  }
+		
+	if (locked)
+		release();
+		
+	return ret_code;
+	
+}		
+		
+
+int Shm_Queue::push_wait(const shm_block* mb, bool	blocked)
+{
+	timespec tv = {0, Q_SLEEP_TIME};
+		
+//	fprintf(stderr, "push wait error , tail=%d, head=%d, mb_len=%d", shm_addr->tail, shm_addr->head ,mb->length);
+		
+	if (align_queue_head (mb) == -1)
+		return -1;
+		
+	//	fprintf(stderr, "push wait error , tail=%d, head=%d, mb_len=%d", shm_addr->tail, shm_addr->head ,mb->length);
+		
+push_wait_again:
+	while (shm_addr->tail - shm_addr->head > 0 && shm_addr->tail - shm_addr->head < mb->length +1 )
+	{
+		if (!blocked || stopped)
+		{
+			fprintf(stderr, "push wait error , tail=%d, head=%d, mb_len=%d", shm_addr->tail, shm_addr->head ,mb->length);
+			return -1;
+		}
+		nanosleep (&tv, NULL);
+		
+	}
+	
+	if (align_queue_head (mb) == -1)
+		return -1;
+		
+	if (shm_addr->tail - shm_addr->head > 0 && shm_addr->tail - shm_addr->head < mb->length +1)
+			goto push_wait_again;
+		
+//	fprintf(stderr, "Shm_Queue::push_wait in push_wait \n");
+			
+	return 0;
+	
+		
+}
+
+int Shm_Queue::align_queue_head(const shm_block* mb)
+{
+//	fprintf(stderr, "shm_Queue:: align_queue_head, mb_len=%d", mb->length);
+	
+	int tail_pos = shm_addr->tail;
+	int head_pos = shm_addr->head;
+	int surplus = shm_len - head_pos;
+	
+	if (surplus < mb->length && tail_pos == sizeof (queue_header))
+	{
+		fprintf(stderr, "shm_Queue:: align_queue_head, surplus=%d, mb_len=%d",surplus, mb->length);
+		return -1;
+		
+	}
+	
+	if (surplus < MB_HEAD_LENGTH)
+	{
+		shm_addr->head = sizeof (queue_header);
+		return 0;
+	}
+	
+	shm_block* next_mb = get_head_mb ();
+	if (surplus < mb->length)
+	{
+		next_mb->length = surplus;
+		next_mb->type = PAD_REQUEST;
+		next_mb->id = 0;
+		shm_addr->head = sizeof (queue_header);
+	}
+	
+	return 0;
+}		
+	
+	
+int Shm_Queue::pop_wait (bool blocked)
+{
+	timespec tv = {0, Q_SLEEP_TIME};
+	align_queue_tail ();
+	
+pop_wait_again:
+	
+	while (shm_addr->tail == shm_addr->head)
+	{
+		if (!blocked || stopped)
+			return -1;
+		nanosleep (&tv, NULL);
+	}
+	align_queue_tail ();
+	
+	if (shm_addr->tail == shm_addr->head)
+	{
+		fprintf(stderr, "[pop_wait] shm_queue tail=%d, head=%d", shm_addr->tail,shm_addr->head);
+		goto pop_wait_again;
+	}
+	return 0;
+}
+		
+		
+		
