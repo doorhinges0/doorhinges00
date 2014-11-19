@@ -1,0 +1,513 @@
+/*
+* Filename:	db.c
+* Function:	database api
+* Discription:
+* Modified:
+*
+*/
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <mysql/mysql.h>
+
+#include "db.h"
+
+//DB connection status 
+#define STATUS_CONN_IDE					1
+#define STATUS_CONN_BUSY				2
+
+
+typedef struct db_conn
+{
+	MYSQL *conn;
+	char status;		//STATUS_DBHANDLE_IDE / STATUS_DBHANDLE_BUSY
+	
+}db_conn_t;
+
+
+
+static db_config_t gdb_config;
+static db_conn_t *gpdb_conns = NULL;
+static int gmax_conn_num = 0;
+static pthread_mutex_t gdb_mutex;
+
+
+//return:RET_OK/RET_ERR
+static int db_close_conn(MYSQL **conn)
+{
+    if(*conn)
+    {
+        mysql_close(*conn);
+        *conn = NULL;
+		
+//		OSAL_trace( eOSAL, eError, "close database OK!");
+//		LOG( LOG_TRACE, "****close database OK!****");
+			printf(stderr, "****close database OK!****");
+    }
+	
+    return RET_OK;
+}
+
+
+//return:RET_OK/mysql_errno!!!
+static int db_create_conn(MYSQL **conn)
+{
+    char *unix_sock = NULL;
+	int ret = RET_OK;
+	int timeout = 1;	//重试两次，共三次，3s
+
+    // 建立数据库连接
+    db_close_conn(conn);
+    *conn = mysql_init(NULL);
+	if(*conn == NULL)
+	{
+//		OSAL_trace( eOSAL, eError, "mysql_init fail");
+//		LOG( LOG_ERROR , "mysql_init fail [%s:%d]" );
+		printf(stderr, "****close database OK!****");
+		return RET_ERR;
+	}
+	
+    if (memcmp(gdb_config.host, "localhost", sizeof("localhost")) == 0)
+    {
+        unix_sock = "/tmp/mysql.sock";
+    }
+	
+	//设置查询数据库(select)超时时间
+	mysql_options(*conn,MYSQL_OPT_READ_TIMEOUT,(const char *)&timeout);
+
+	//设置写数据库(update,delect,insert,replace等)的超时时间。
+    mysql_options(*conn,MYSQL_OPT_WRITE_TIMEOUT,(const char *)&timeout);
+	
+	
+    if (!mysql_real_connect(*conn, gdb_config.host, gdb_config.user, gdb_config.pwd, gdb_config.dbname, gdb_config.port, unix_sock, 0))
+    {
+//		OSAL_trace( eOSAL, eError, "db_create_conn:connect to database fail(%s:%s@%s:%d)! error: %s", gdb_config.user, gdb_config.pwd, gdb_config.host, gdb_config.port, mysql_error(*conn));
+//			LOG( LOG_ERROR,"db_create_conn:connect to database fail(%s:%s@%s:%d)! error: %s", gdb_config.user, gdb_config.pwd, gdb_config.host, gdb_config.port, mysql_error(*conn));
+		printf(stderr, "db_create_conn:connect to database fail(%s:%s@%s:%d)! error: %s", gdb_config.user, gdb_config.pwd, gdb_config.host, gdb_config.port, mysql_error(*conn));
+		ret = mysql_errno(*conn);
+		
+		db_close_conn(conn);		
+        return ret;
+    }
+	
+//	OSAL_trace( eOSAL, eInfo, "connect to database OK!");
+//	LOG( LOG_TRACE, "connect to database OK! ");
+		printf(stderr, "connect to database OK!");
+
+    return RET_OK;
+	
+}
+
+
+
+//out:	pconn_index: 保存所返回的操作句柄在gpdb_conns[n]中的索引
+//return:NULL/conn
+static MYSQL** db_alloc_conn(int *pconn_index)
+{
+	#define MAX_TRY_COUNT		5
+
+	int i;
+	int try_cnt = 0;
+	db_conn_t *p = NULL;
+
+	if(!pconn_index)
+		return NULL;
+
+
+	while(try_cnt++ < MAX_TRY_COUNT)
+	{
+		pthread_mutex_lock(&gdb_mutex);
+		
+		for(i=0;i<gmax_conn_num;i++)
+		{
+			p = gpdb_conns + i;
+			
+			if(p->status == STATUS_CONN_IDE)
+			{
+				p->status = STATUS_CONN_BUSY;
+				
+				pthread_mutex_unlock(&gdb_mutex);
+				
+				if(p->conn)
+				{
+					if(0 == mysql_ping(p->conn))
+					{						
+						*pconn_index = i;
+						return (&p->conn);
+					}
+					else
+					{
+//						OSAL_trace( eOSAL, eError, "mysql_ping failed!");
+						LOG( LOG_ERROR, "mysql_ping failed! ");
+						printf(stderr, "mysql_ping failed!");
+					}
+				}
+				
+				//重连数据库		
+				if(RET_OK == db_create_conn(&p->conn))
+				{					
+					*pconn_index = i;
+					return (&p->conn);
+				}
+				
+				pthread_mutex_lock(&gdb_mutex);
+				p->status = STATUS_CONN_IDE;
+				pthread_mutex_unlock(&gdb_mutex);
+				
+				return NULL;		//放弃重连后的这次处理，客户端可能已经超时放弃了START,防止START误添加
+				
+			}	
+		}
+		
+		pthread_mutex_unlock(&gdb_mutex);
+		
+		usleep(100000);		//100ms
+		
+	}
+	
+//	OSAL_trace( eOSAL, eError, "no more db handles to use!");
+//	LOG( LOG_ERROR, "no more db handles to use! ");
+	printf(stderr, "no more db handles to use! ");
+
+	return NULL;
+
+}
+
+
+//in:	index: g_dbhandle[MAX_DB_HANDLES]的索引
+static void db_release_conn(int index)
+{
+	db_conn_t *p = NULL;
+	
+	if((index < 0) || (index >= gmax_conn_num))
+	{
+//		OSAL_trace( eOSAL, eError, "index err");
+//		LOG( LOG_ERROR, "*** db_release_conn ***  index err");
+		printf(stderr, "*** db_release_conn ***  index err");
+		return;
+	}	
+	
+	pthread_mutex_lock(&gdb_mutex);
+	
+	p = gpdb_conns + index;
+	p->status = STATUS_CONN_IDE;
+	
+	pthread_mutex_unlock(&gdb_mutex);
+	
+}
+
+
+//return:RET_OK/RET_ERR
+static int db_exe(MYSQL **conn,char *sql)
+{
+		
+	if(!conn || !sql)
+		return RET_ERR;
+		
+    if(0 != mysql_query(*conn, sql))
+    {
+//		OSAL_trace( eOSAL, eError, "SQL:%s",sql);
+//		OSAL_trace( eOSAL, eError, "db_exe: failed,errno:%d,error:%s", mysql_errno(*conn),mysql_error(*conn));
+//			LOG( LOG_ERROR,  "SQL:%s",sql);
+//			LOG( LOG_ERROR, "db_exe: failed,errno:%d,error:%s", mysql_errno(*conn),mysql_error(*conn));
+			printf(stderr, "SQL:%s",sql);
+			printf(stderr, "db_exe: failed,errno:%d,error:%s", mysql_errno(*conn),mysql_error(*conn));
+		return RET_ERR;
+    }
+
+	return RET_OK;
+}
+
+
+
+
+//return:RET_OK/RET_ERR
+int db_init(db_config_t *db_cfg,int max_connection_num)
+{
+	int i;
+	db_conn_t *p = NULL;
+
+	if(!db_cfg)
+		return RET_ERR;
+	
+	//test
+	strncpy(gdb_config.host,db_cfg->host,sizeof(gdb_config.host));
+	strncpy(gdb_config.user,db_cfg->user,sizeof(gdb_config.user));
+	strncpy(gdb_config.pwd,db_cfg->pwd,sizeof(gdb_config.pwd));
+	strncpy(gdb_config.dbname,db_cfg->dbname,sizeof(gdb_config.dbname));
+	gdb_config.port = db_cfg->port;
+
+	
+//	OSAL_trace( eOSAL, eInfo, "host:%s,user:%s,pwd:%s,dbname:%s,port:%d",gdb_config.host,gdb_config.user,
+//    			gdb_config.pwd,gdb_config.dbname,gdb_config.port);
+//  LOG( LOG_TRACE,  "host:%s,user:%s,pwd:%s,dbname:%s,port:%d",gdb_config.host,gdb_config.user,gdb_config.pwd,gdb_config.dbname,gdb_config.port);
+	printf(stderr,   "host:%s,user:%s,pwd:%s,dbname:%s,port:%d",gdb_config.host,gdb_config.user,gdb_config.pwd,gdb_config.dbname,gdb_config.port);
+
+	gpdb_conns = (db_conn_t*)malloc(sizeof(db_conn_t) * max_connection_num);
+	if(NULL == gpdb_conns)
+	{
+	//	OSAL_trace( eOSAL, eError, "malloc error!");
+	//	LOG( LOG_ERROR , "malloc error!");
+		printf(stderr,  "malloc error!");
+		return RET_ERR;
+	}
+	
+	memset((char*)gpdb_conns,0,sizeof(db_conn_t) * max_connection_num);
+	
+	gmax_conn_num = max_connection_num;
+
+	for(i=0;i<gmax_conn_num;i++)
+	{
+		p = gpdb_conns + i;
+
+		p->conn = NULL;
+
+		if(RET_OK != db_create_conn(&p->conn))
+		{
+	//		OSAL_trace( eOSAL, eError, "db_create_conn failed![i=%d]",i);
+	//		LOG( LOG_ERROR , "db_create_conn failed![i=%d]",i);
+				printf(stderr,  "db_create_conn failed![i=%d]",i);
+			return RET_ERR;
+		}
+		
+		p->status = STATUS_CONN_IDE;
+		
+		
+//		OSAL_trace( eOSAL, eInfo, "connect to database OK![i=%d]",i);
+//		LOG ( LOG_TRACE , "connect to database OK![i=%d]",i);
+	  printf(stderr,  "connect to database OK![i=%d]",i);
+	}
+
+	
+	if(pthread_mutex_init(&gdb_mutex, NULL) < 0)
+	{
+//		OSAL_trace( eOSAL, eError, "pthread_mutex_init failed!");
+//		LOG ( LOG_ERROR , "pthread_mutex_init failed!");
+		printf(stderr,  "pthread_mutex_init failed!");
+		return RET_ERR;
+	} 
+
+//	OSAL_trace( eOSAL, eSys, "db init OK!");
+//	LOG ( LOG_TRACE , "db init OK!");
+	printf(stderr,  "db init OK!");
+
+	return RET_OK;
+	
+}
+
+
+void db_end()
+{	
+	int i;
+	db_conn_t *p = NULL;
+
+	for(i=0;i<gmax_conn_num;i++)
+	{
+		p = gpdb_conns + i;
+		
+		db_close_conn(&p->conn);		
+		p->status = STATUS_CONN_IDE;
+	}
+
+	if(gpdb_conns)
+		free(gpdb_conns);
+		
+	pthread_mutex_destroy(&gdb_mutex);
+}
+
+
+//out:	paffect_rows: output the affected  rows
+//return:RET_OK/RET_ERR/RET_OTHER(no data affected)
+int db_update_insert_del(char *sql,int *paffect_rows)
+{	
+	
+	MYSQL **pconn;
+	int index = 0;
+	int ret = RET_OK;
+	
+	
+	if(!sql || !paffect_rows)
+		return RET_ERR;
+
+	*paffect_rows = 0;
+	
+	if(NULL == (pconn = db_alloc_conn(&index)))
+		return RET_ERR;
+
+	if(RET_OK == db_exe(pconn,sql))
+	{
+		*paffect_rows = (int)mysql_affected_rows(*pconn);
+	}
+	else
+	{
+		ret = RET_ERR;
+	}
+		
+	db_release_conn(index);
+
+	
+	if(RET_ERR == ret)
+	{		
+	//	OSAL_trace( eOSAL, eError, "db_exe or mysql_affected_rows failed!");
+	//	LOG ( LOG_ERROR ,"db_exe or mysql_affected_rows failed!");
+		printf(stderr,  "db_exe or mysql_affected_rows failed!");
+		
+		return RET_ERR;
+	}
+
+	if(*paffect_rows > 0)
+		return RET_OK;
+	
+
+	return RET_OTHER;	
+	
+}
+
+
+
+//in:	pdb: point to buf to save return data, pdb[row][col]
+//		rownum: row of select data
+//		col:	colum of select data
+//out:	pretrow: return the real rows of select data
+//return:RET_OK/RET_ERR/RET_OTHER(not found)
+int db_select(char *sql,data_fmt_t *pdb,int rownum,int col,int *pretrows)
+{		
+	MYSQL **dbhandle;
+	int index = 0;
+    MYSQL_RES *recordset = NULL;
+    MYSQL_ROW  row;
+	data_fmt_t *p = pdb;
+	int i,j;
+	int ret = RET_OK;
+	long t_long = 0;
+	//int len = 0;
+
+	
+	if(!sql || !pdb || !pretrows)
+		return RET_ERR;
+	
+	*pretrows = 0;
+	
+	if(NULL == (dbhandle = db_alloc_conn(&index)))
+		return RET_ERR;
+
+	if((RET_OK != db_exe(dbhandle,sql)) || (NULL == (recordset = mysql_store_result(*dbhandle))))
+	{
+		ret = RET_ERR;
+	}
+
+	db_release_conn(index);
+
+		
+	if(RET_ERR == ret)
+	{
+//		OSAL_trace( eOSAL, eError, "db_exe or mysql_store_result failed!");
+//			LOG ( LOG_ERROR ,"db_exe or mysql_store_result failed!");
+			printf(stderr, "db_exe or mysql_store_result failed!");
+			
+		return RET_ERR;
+	}
+	
+	for(i=0;i<rownum;i++)
+	{
+		
+		if(NULL == (row = mysql_fetch_row(recordset)))
+		{
+			break;
+		}
+
+		for(j=0;j<col;j++)
+		{
+			p = pdb + (i * col + j);
+			if(row[j])
+			{
+				switch(p->type)
+				{
+					case INT_TYPE:
+						t_long = atol(row[j]);	
+						if(t_long > 0)
+						{//溢出处理
+							if(t_long >= 0x7fffffff)
+								*((int*)(p->pvalue)) = 0x7fffffff;
+							else
+								*((int*)(p->pvalue)) = (int)t_long;
+						}
+						else
+						{
+							*((int*)(p->pvalue)) = 0;
+						}
+						
+						break;
+					case LONGLONG_TYPE:
+						*((long long *)(p->pvalue)) = atoll(row[j]);
+
+						break;						
+					case STR_TYPE:
+						strncpy((char*)p->pvalue,row[j],p->len);
+						break;
+					//case TEXT_TYPE:
+					//	len = strlen(row[j]);						
+					//	if(NULL != (p->pvalue = malloc(len + 1)))
+					//	{
+					//		memcpy((char*)p->pvalue,(char*)row[j],len);
+					//		((char*)(p->pvalue))[len] = '\0';
+					//	}
+					//	else
+					//	{
+					//		OSAL_trace( eOSAL, eError, "malloc error!");
+					//	}
+					//	
+					//	break;
+					default:						
+	//					OSAL_trace( eOSAL, eError, "value type error!");
+	//						LOG ( LOG_ERROR ,"value type error!");
+								printf(stderr, "value type error!");
+						break;
+				}
+			}
+			else
+			{//NULL
+				
+				switch(p->type)
+				{
+					case INT_TYPE:
+						*((int*)(p->pvalue)) = 0;
+						break;						
+					case LONGLONG_TYPE:
+						*((long long *)(p->pvalue)) = 0;
+						break;
+					case STR_TYPE:
+						*(char*)(p->pvalue) = '\0';
+						break;
+					//case TEXT_TYPE:
+					//	p->pvalue = NULL;
+					//	break;
+					default:
+//						OSAL_trace( eOSAL, eError, "value type error!");
+//						LOG ( LOG_ERROR ,"value type error!");
+						printf(stderr, "value type error!");
+						break;
+				}
+			}
+		}
+		
+		(*pretrows)++;
+		
+	}
+
+
+	mysql_free_result(recordset);
+
+	if(0 == (*pretrows))
+		return RET_OTHER;
+	else 
+		return RET_OK;
+	
+}
+
+#ifdef __cplusplus
+}
+#endif
+

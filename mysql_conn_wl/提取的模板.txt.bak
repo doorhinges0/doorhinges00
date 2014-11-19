@@ -1,0 +1,9 @@
+
+
+LOG( LOG_ERROR , "Init Msg Server[%s:%d] Fail" , g_sMsgServerList.c_str() , g_sMsgServerPort );
+
+LOG ( LOG_TRACE , "FD[%d] CLOSE CONNECTION" , fd);
+LOG( LOG_TRACE, "****error sserver stranfer message;%s",transresult["failmsg"].asString().c_str());
+
+
+
