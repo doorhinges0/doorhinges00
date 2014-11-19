@@ -1,0 +1,9 @@
+CXX:=g++
+FLAG:=-Wno-write-strings
+all:
+	$(CXX) -fPIC -Wall $(FLAG) -c cgi_util.cpp
+	$(CXX) -Wall $(FLAG) -o unittest unittest.cpp cgi_util.o -lstdc++
+
+
+clean:
+	rm -f cgi_util.o unittest
